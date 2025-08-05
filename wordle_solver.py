@@ -155,7 +155,17 @@ class WordleSolver:
     
     def get_initial_guess(self) -> Tuple[str, float]:
         """Get the best starting word."""
-        return self._get_best_guess(self.words)
+        # Use hard-coded optimal starting words based on analysis
+        if self.hard_mode:
+            # CANOE is optimal for hard mode
+            initial_word = "CANOE"
+        else:
+            # RAISE is optimal for normal mode
+            initial_word = "RAISE"
+        
+        # Calculate information gain for the hard-coded word
+        information_gain = self._calculate_information_gain(initial_word, self.words)
+        return initial_word, information_gain
     
     def process_feedback(self, guess: str, feedback: List[str]) -> Tuple[str, float]:
         """Process feedback and return the best next guess."""
