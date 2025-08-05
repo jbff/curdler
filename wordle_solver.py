@@ -11,6 +11,19 @@ import argparse
 from typing import List, Dict, Tuple, Set
 from collections import Counter
 
+# Color codes for terminal output
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
 class WordleSolver:
     def __init__(self, word_list_file: str = "wordles.txt", hard_mode: bool = False):
         """Initialize the solver with a word list."""
@@ -18,6 +31,7 @@ class WordleSolver:
         self.possible_solutions = self.words.copy()
         self.guess_history = []
         self.hard_mode = hard_mode
+        self.step_count = 0
         
     def _load_words(self, filename: str) -> List[str]:
         """Load words from file."""
@@ -116,7 +130,7 @@ class WordleSolver:
         
         return information_gain
     
-    def _get_best_guess(self, possible_solutions: List[str], allow_solutions: bool = True) -> str:
+    def _get_best_guess(self, possible_solutions: List[str], allow_solutions: bool = True) -> Tuple[str, float]:
         """Find the word that provides the most information."""
         best_guess = None
         best_information = -1
@@ -137,27 +151,35 @@ class WordleSolver:
                 best_information = information
                 best_guess = guess
         
-        return best_guess
+        return best_guess, best_information
     
-    def get_initial_guess(self) -> str:
+    def get_initial_guess(self) -> Tuple[str, float]:
         """Get the best starting word."""
         return self._get_best_guess(self.words)
     
-    def process_feedback(self, guess: str, feedback: List[str]) -> str:
+    def process_feedback(self, guess: str, feedback: List[str]) -> Tuple[str, float]:
         """Process feedback and return the best next guess."""
         # Add to history
         self.guess_history.append((guess, feedback))
+        self.step_count += 1
         
         # Filter possible solutions
         self.possible_solutions = self._filter_solutions(guess, feedback)
         
-        print(f"Possible solutions remaining: {len(self.possible_solutions)}")
-        if len(self.possible_solutions) <= 10:
-            print(f"Solutions: {', '.join(self.possible_solutions)}")
+        # Calculate statistics
+        total_solutions = len(self.possible_solutions)
+        percentage_remaining = (total_solutions / len(self.words)) * 100
+        
+        print(f"\n{Colors.CYAN}📊 Statistics:{Colors.END}")
+        print(f"   {Colors.BLUE}•{Colors.END} Possible solutions: {Colors.BOLD}{total_solutions}{Colors.END}")
+        print(f"   {Colors.BLUE}•{Colors.END} Eliminated: {Colors.BOLD}{len(self.words) - total_solutions}{Colors.END} ({100 - percentage_remaining:.1f}%)")
+        
+        if total_solutions <= 10:
+            print(f"   {Colors.BLUE}•{Colors.END} Solutions: {Colors.GREEN}{', '.join(self.possible_solutions)}{Colors.END}")
         
         # If we have one solution left, suggest it
-        if len(self.possible_solutions) == 1:
-            return self.possible_solutions[0]
+        if total_solutions == 1:
+            return self.possible_solutions[0], 0.0
         
         # Get best next guess
         return self._get_best_guess(self.possible_solutions)
@@ -166,6 +188,7 @@ class WordleSolver:
         """Reset the solver for a new puzzle."""
         self.possible_solutions = self.words.copy()
         self.guess_history = []
+        self.step_count = 0
 
 def parse_feedback(feedback_str: str) -> List[str]:
     """Parse feedback string into list of feedback codes."""
@@ -183,6 +206,18 @@ def parse_feedback(feedback_str: str) -> List[str]:
     
     return feedback
 
+def display_feedback_colored(feedback: List[str]) -> str:
+    """Display feedback with colored squares."""
+    colored = ""
+    for f in feedback:
+        if f == 'G':
+            colored += f"{Colors.GREEN}🟩{Colors.END}"
+        elif f == 'Y':
+            colored += f"{Colors.YELLOW}🟨{Colors.END}"
+        else:
+            colored += "⬛"
+    return colored
+
 def main():
     """Main interactive loop."""
     parser = argparse.ArgumentParser(description='Wordle Co-Solver')
@@ -193,41 +228,63 @@ def main():
     solver = WordleSolver(hard_mode=args.hard)
     
     mode_str = "HARD MODE" if args.hard else "NORMAL MODE"
-    print(f"🎯 Wordle Co-Solver ({mode_str})")
-    print("=" * 50)
-    print("Feedback format: G=Green, Y=Yellow, X=Gray")
-    print("Example: GYXGY means first letter green, second yellow, third gray, etc.")
+    print(f"{Colors.BOLD}{Colors.PURPLE}🎯 Wordle Co-Solver ({mode_str}){Colors.END}")
+    print(f"{Colors.CYAN}{'='*50}{Colors.END}")
+    print(f"{Colors.WHITE}Feedback format: G=Green, Y=Yellow, X=Gray{Colors.END}")
+    print(f"{Colors.WHITE}Example: GYXGY means first letter green, second yellow, third gray, etc.{Colors.END}")
+    print(f"{Colors.WHITE}Shortcuts: 'solved' = puzzle solved, 'yes' = last guess was correct{Colors.END}")
     if args.hard:
-        print("⚠️  HARD MODE: All guesses must use information from previous guesses")
+        print(f"{Colors.YELLOW}⚠️  HARD MODE: All guesses must use information from previous guesses{Colors.END}")
     print()
     
     # Get initial guess
-    initial_guess = solver.get_initial_guess()
-    print(f"Suggested starting word: {initial_guess}")
+    initial_guess, initial_info = solver.get_initial_guess()
+    print(f"{Colors.BOLD}{Colors.GREEN}🚀 Suggested starting word: {Colors.END}{Colors.BOLD}{initial_guess}{Colors.END}")
+    print(f"{Colors.BLUE}📊 Information gain: {initial_info:.3f} bits{Colors.END}")
     
     while True:
-        print("\n" + "=" * 50)
+        print(f"\n{Colors.CYAN}{'='*50}{Colors.END}")
         
         # Get feedback from user
         while True:
             try:
-                feedback_str = input("Enter feedback (G/Y/X): ").strip()
+                feedback_str = input(f"{Colors.WHITE}Enter feedback (G/Y/X) or 'solved': {Colors.END}").strip()
                 if feedback_str.lower() == 'quit':
+                    return
+                if feedback_str.lower() == 'solved':
+                    print(f"{Colors.GREEN}🎉 Congratulations! Puzzle solved in {solver.step_count + 1} steps!{Colors.END}")
+                    return
+                if feedback_str.lower() == 'yes':
+                    print(f"{Colors.GREEN}🎉 Congratulations! Puzzle solved in {solver.step_count + 1} steps!{Colors.END}")
                     return
                 feedback = parse_feedback(feedback_str)
                 break
             except ValueError as e:
-                print(f"Error: {e}")
+                print(f"{Colors.RED}❌ Error: {e}{Colors.END}")
                 continue
         
         # Check if we solved it
         if all(f == 'G' for f in feedback):
-            print("🎉 Congratulations! Puzzle solved!")
+            print(f"{Colors.GREEN}🎉 Congratulations! Puzzle solved in {solver.step_count + 1} steps!{Colors.END}")
             return
         
         # Get next guess
-        next_guess = solver.process_feedback(initial_guess, feedback)
-        print(f"Next suggested word: {next_guess}")
+        next_guess, next_info = solver.process_feedback(initial_guess, feedback)
+        
+        # Check if we have only one solution left
+        if len(solver.possible_solutions) == 1:
+            print(f"\n{Colors.YELLOW}🎯 Only one solution remaining: {Colors.BOLD}{next_guess}{Colors.END}")
+            print(f"{Colors.WHITE}Is this the correct solution? (yes/no): {Colors.END}", end="")
+            response = input().strip().lower()
+            if response in ['yes', 'y']:
+                print(f"{Colors.GREEN}🎉 Congratulations! Puzzle solved in {solver.step_count + 1} steps!{Colors.END}")
+                return
+            else:
+                print(f"{Colors.RED}❌ Sorry, we've run out of possible solutions. The word list may be incomplete.{Colors.END}")
+                return
+        else:
+            print(f"\n{Colors.BOLD}{Colors.GREEN}💡 Next suggested word: {Colors.END}{Colors.BOLD}{next_guess}{Colors.END}")
+            print(f"{Colors.BLUE}📊 Information gain: {next_info:.3f} bits{Colors.END}")
         
         # Update for next iteration
         initial_guess = next_guess
