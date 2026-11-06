@@ -102,3 +102,55 @@ def build_feedback_matrix(words: Sequence[str]) -> np.ndarray:
     assert result.dtype == np.uint8
     assert int(result.max()) <= 242
     return result
+
+
+def compatibility_set(S: np.ndarray, g: int, pattern: int, matrix: np.ndarray) -> np.ndarray:
+    """Filter the candidate set ``S`` down to the pattern-``pattern`` bucket.
+
+    A candidate ``w`` is compatible with feedback ``pattern`` for guess ``g``
+    iff ``matrix[g, w] == pattern``, so the compatibility filter — and with
+    it every bucket — is just a lookup in the prebuilt matrix row. ``S``
+    holds matrix-row indices; returns the retained elements of ``S`` in
+    order, ready to pass straight back in as ``S`` on the next round.
+    """
+    S = np.asarray(S, dtype=np.intp)
+    row = matrix[g]
+    return S[row[S] == pattern]
+
+
+def counts_vs_S(matrix: np.ndarray, S: np.ndarray) -> np.ndarray:
+    """For every guess row, count solutions of ``S`` landing in each pattern.
+
+    Returns an (N, N_PATTERNS) int32 array: ``counts[g, p]`` is how many
+    solution indices in ``S`` give pattern ``p`` against guess row ``g``.
+    Sums over each column independently of ``len(S)`` (empty ``S`` yields
+    all zeros).
+
+    The trick: one flat ``bincount`` replaces a per-guess loop. Adding each
+    guess row's own index times N_PATTERNS makes the (N, len(S)) lookup
+    block contain globally unique bin ids — ``row * 243 + pattern`` — so a
+    single pass tallies all rows at once and a reshape hands back the
+    per-row counts.
+    """
+    S = np.asarray(S, dtype=np.intp)
+    n = matrix.shape[0]
+    flat = matrix[:, S].astype(np.int64) + np.arange(n)[:, None] * N_PATTERNS
+    return np.bincount(flat.ravel(), minlength=n * N_PATTERNS).reshape(n, N_PATTERNS).astype(np.int32)
+
+
+def score_guess(counts_row: np.ndarray, S_size: int) -> tuple[float, float, int]:
+    """Score one guess from its pattern-count row against a set of size
+    ``S_size``.
+
+    Returns ``(entropy_bits, expected_remaining, worst_bucket)``: the
+    Shannon entropy of the bucket distribution, the probability-weighted
+    bucket size (sum of c^2 / |S| — how many solutions a random answer
+    would leave), and the largest bucket. Zero counts are skipped so
+    ``log2`` never sees 0.
+    """
+    counts = np.asarray(counts_row)
+    nonzero = counts[counts > 0].astype(np.float64)
+    p = nonzero / S_size
+    entropy = float(-(p * np.log2(p)).sum())
+    expected_remaining = float((nonzero * nonzero).sum() / S_size)
+    return entropy, expected_remaining, int(counts.max())

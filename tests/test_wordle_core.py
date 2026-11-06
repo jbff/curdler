@@ -1,7 +1,10 @@
+import math
+
 import numpy as np
 import pytest
 
 import wordle_core as wc
+import wordle_solver
 
 # encoding: pattern = sum((2 * green + 1 * yellow) * 3**i) — one ternary digit
 # per position (2 = green, 1 = yellow, 0 = gray).
@@ -70,3 +73,69 @@ def test_matrix_symmetry_of_values_not_required(real_matrix):
     # Guards against an accidental transpose: some (g, w) pairs must differ
     # from their mirror (w, g).
     assert bool((matrix != matrix.T).any())
+
+
+# --- Task 2: bucket counts + cheap metrics -------------------------------
+
+
+@pytest.fixture(scope="module")
+def legacy_solver():
+    return wordle_solver.WordleSolver("wordles.txt")
+
+
+def test_bucket_equals_legacy_filter(real_matrix, legacy_solver):
+    # compatibility_set(S, g, F, matrix) must reduce to the compatibility
+    # filter: w is compatible with (guess, feedback) iff feedback(guess, w)
+    # equals the pattern. The reference below is built from the legacy
+    # solver's own _get_feedback (pure legacy code). _is_word_compatible is
+    # NOT fit as reference: it is over-permissive when the guess repeats a
+    # letter that F marks yellow at one index and gray at another — its
+    # yellow pass consumes the word's only occurrence of the letter, so a
+    # position F marks gray escapes the gray check even where the true
+    # feedback would be green (e.g. SWEEP/XXYXX: it accepts {SWEEP-real-
+    # feedback = XXXGX} words like ABBEY that the real rule excludes).
+    words, matrix = real_matrix
+    solver = legacy_solver
+    assert solver.words == words  # both loaded from the same wordles.txt
+    n = len(words)
+    rng = np.random.default_rng(4242)
+    for _ in range(5):
+        g, w = rng.integers(0, n, size=2)
+        guess = words[g]
+        feedback = "".join(solver._get_feedback(guess, words[w]))
+        truth = {word for word in solver.words
+                 if "".join(solver._get_feedback(guess, word)) == feedback}
+        bucket = wc.compatibility_set(np.arange(n), g,
+                                      wc.feedback_pattern(guess, words[w]),
+                                      matrix)
+        assert {words[i] for i in bucket} == truth
+
+
+def test_entropy_matches_legacy(real_matrix, legacy_solver):
+    # Shannon entropy of the pattern distribution from counts_vs_S must
+    # equal the legacy _calculate_information_gain (same quantity).
+    words, matrix = real_matrix
+    S = np.arange(len(words))
+    counts = wc.counts_vs_S(matrix, S)
+    rng = np.random.default_rng(7)
+    for g in rng.choice(len(words), size=5, replace=False):
+        entropy, _expected_remaining, _worst = wc.score_guess(counts[g], len(S))
+        want = legacy_solver._calculate_information_gain(words[g], legacy_solver.words)
+        assert abs(entropy - want) < 1e-9
+
+
+def test_score_guess_values():
+    # Toy: guess AAAAA buckets {AAAAA} (all-green) and {BBBBB, CCCCC}
+    # (all-gray). p = 1/3 and 2/3.
+    toy = ["AAAAA", "BBBBB", "CCCCC"]
+    matrix = wc.build_feedback_matrix(toy)
+    S = np.arange(3)
+    counts = wc.counts_vs_S(matrix, S)
+    entropy, expected_remaining, worst = wc.score_guess(counts[0], len(S))
+    want_entropy = -(1 / 3) * math.log2(1 / 3) - (2 / 3) * math.log2(2 / 3)
+    assert abs(entropy - want_entropy) < 1e-6
+    assert abs(entropy - 0.918296) < 1e-6
+    # Sum over buckets of p * size = (1^2 + 2^2) / 3.
+    assert abs(expected_remaining - 5 / 3) < 1e-6
+    assert abs(expected_remaining - 1.666667) < 1e-6
+    assert worst == 2
