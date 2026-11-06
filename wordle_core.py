@@ -213,3 +213,81 @@ def select_guess(S: np.ndarray, legal: np.ndarray | None, matrix: np.ndarray) ->
     if in_S.any():
         best = best[in_S]
     return int(candidates[best[0]])  # 4. list order (lowest index first)
+
+
+def expected_and_worst_turns(
+    S: np.ndarray,
+    legal: np.ndarray | None,
+    matrix: np.ndarray,
+    memo: dict,
+    depth: int = 0,
+) -> tuple[float, int]:
+    """Exact expected and worst-case turn counts for the solution set ``S``
+    under the ``select_guess`` policy (Task 4).
+
+    Returns ``(expected_turns, worst_turns)`` for playing ``S`` out under the
+    policy: each turn the policy's pick ``g`` is played, the all-green bucket
+    of ``S`` is solved that same turn (covered by the leading +1), and every
+    other bucket is played out recursively:
+
+        E(S) = 1 + Σ_{buckets ≠ green} p_b · E(S_b)
+        W(S) = 1 + max(W(S_b) over buckets ≠ green, 0)
+
+    ``legal`` is ``None`` for normal mode ("all candidates legal") or a
+    boolean mask over candidate indices (hard mode). Hard-mode legality
+    narrows like the solution set: after observing pattern ``F`` against
+    guess ``g``, only words compatible with that feedback remain legal
+    guesses, so the child mask is ``legal & (matrix[g, :] == F)`` — the
+    same matrix-row lookup the bucketing itself uses. In normal mode nothing
+    narrows, so ``None`` passes through unchanged.
+
+    Results are memoized in ``memo`` on the key
+    ``(S.astype(np.int32).tobytes(), legal.tobytes() if legal is not None
+    else b"")``. The legal-mask bytes matter beyond the ``S`` bytes: two
+    hard-mode calls can share a candidate set but differ in which of its
+    members are still legal, and those states must not collide — hence the
+    empty bytes literal standing in for ``None``.
+
+    Raises:
+        ValueError("hard-mode dead end") — ``S`` is down to one solution
+            that is no longer a legal guess (nothing left to play out).
+        ValueError("no legal candidates") — nothing is legal; raised by
+            ``select_guess`` and propagated.
+        AssertionError — ``depth`` exceeds 12: a policy-bug detector, not a
+            data path (a healthy policy solves any ``S`` long before this).
+    """
+    if depth > 12:
+        raise AssertionError("policy bug: expected_and_worst_turns deeper than depth 12")
+
+    S = np.asarray(S, dtype=np.intp)
+
+    # Forced win: one solution left and it is still a legal guess.
+    if S.size == 1 and (legal is None or np.asarray(legal, dtype=bool)[S[0]]):
+        return 1.0, 1
+    # One solution left but unreachable by any legal guess: hard-mode dead end.
+    if S.size == 1:
+        raise ValueError("hard-mode dead end")
+
+    key = (S.astype(np.int32).tobytes(), legal.tobytes() if legal is not None else b"")
+    if key in memo:
+        return memo[key]
+
+    g = select_guess(S, legal, matrix)
+    patterns = matrix[g][S]
+    total = S.size
+
+    expected = 1.0  # this turn: the policy's pick is played
+    worst = 0  # max over non-green children, floored at 0 by the formula
+    for pattern in np.unique(patterns):
+        if pattern == PATTERN_ALL_GREEN:
+            continue  # solved this very turn — the leading 1 already counts it
+        bucket = S[patterns == pattern]
+        child_legal = legal if legal is None else legal & (matrix[g, :] == pattern)
+        e_b, w_b = expected_and_worst_turns(bucket, child_legal, matrix, memo, depth + 1)
+        expected += (bucket.size / total) * e_b
+        if w_b > worst:
+            worst = w_b
+
+    result = (expected, worst + 1)
+    memo[key] = result
+    return result
