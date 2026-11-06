@@ -105,7 +105,7 @@ The solver provides real-time statistics including:
 The solver and the analyzer share one core (`wordle_core.py`):
 
 1. **Feedback matrix**: the feedback of every (guess, solution) pair is precomputed
-   once as a vectorized 2,358×2,358 table — compatibility filtering, candidate
+   once as a vectorized square table (N×N over the word list) — compatibility filtering, candidate
    bucketing, and hard-mode legality are all single lookups into it.
 2. **One policy, everywhere**: every suggestion (and every metric in the analysis)
    is the *exact* expected-turns tree of one pinned rule: maximize information,
@@ -136,7 +136,7 @@ measures — the metric and the play agree by construction.
 
 ## 🔍 Exact Starting Word Analysis
 
-Computed by `analyze_starting_words.py` over all 2,358 answers in `wordles.txt`
+Computed by `analyze_starting_words.py` over every answer in `wordles.txt`
 (exact expected-turn trees per opening, normal and hard mode; full ranking in
 `starting_words.json`). Analysis takes ~8 min normal + ~3 min hard on 20 cores.
 
@@ -221,7 +221,7 @@ plumbed in as a separate candidate source; the matrix is already shaped for it.
 ### ⚙️ How the analyzer computes this
 
 `wordle_core.py` precomputes the feedback of every (guess, answer) pair once —
-a vectorized 2,358 × 2,358 table (~6MB, ~1s to build). After that, every metric
+a vectorized N×N table over the word list (a few MB, ~1s to build). After that, every metric
 is arithmetic on that table:
 
 - Compatibility with any feedback pattern is a single lookup: word *w* survives

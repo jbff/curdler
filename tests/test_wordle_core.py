@@ -39,7 +39,8 @@ def test_pattern_constants():
 
 def test_build_words():
     words = wc.build_words()
-    assert len(words) == 2359
+    assert len(words) == len(set(words))      # uniqueness, not a fixed size
+    assert all(len(w) == 5 and w.isalpha() for w in words)
     assert words[0] == "ABACK"
     assert all(w == w.upper() for w in words)
 
@@ -53,7 +54,7 @@ def real_matrix():
 def test_random_matrix_rows_match_scalar(real_matrix):
     words, matrix = real_matrix
     assert matrix.dtype == np.uint8
-    assert matrix.shape == (2359, 2359)
+    assert matrix.shape == (len(words), len(words))  # square over the loaded list
     rng = np.random.default_rng(12345)
     for _ in range(20):
         g, w = rng.integers(0, len(words), size=2)
