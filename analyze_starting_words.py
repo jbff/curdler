@@ -122,29 +122,39 @@ def _run_jobs(job, count: int, workers: int, label: str) -> list:
     results strictly in opening order — so both paths return identical results.
     """
     interval = max(1, count // 20)
+    started = time.perf_counter()  # phase wall clock, shown in progress lines
     results = []
     if workers <= 1:
         for i in range(count):
             if i % interval == 0:
-                _print_progress(label, i, count)
+                _print_progress(label, i, count, started=started)
             results.append(job(i))
     else:
         ctx = multiprocessing.get_context("fork")
         with ctx.Pool(workers) as pool:
             for i, result in enumerate(pool.imap(job, range(count))):
                 if i % interval == 0:
-                    _print_progress(label, i, count)
+                    _print_progress(label, i, count, started=started)
                 results.append(result)
-    _print_progress(label, count, count, done=True)
+    _print_progress(label, count, count, done=True, started=started)
     return results
 
 
-def _print_progress(label: str, i: int, count: int, done: bool = False) -> None:
+def _print_progress(
+    label: str, i: int, count: int, done: bool = False, started: float | None = None
+) -> None:
     if done:
-        print(f"{Colors.GREEN}✅ {label} complete{Colors.END}")
+        elapsed = time.perf_counter() - started if started is not None else None
+        tail = f" in {elapsed:.1f}s" if elapsed is not None else ""
+        print(f"{Colors.GREEN}✅ {label} complete{tail}{Colors.END}")
         return
     progress = (i / count) * 100 if count else 100.0
-    print(f"{Colors.CYAN}{label}: {progress:.1f}% ({i}/{count}){Colors.END}")
+    tail = ""
+    if started is not None and i > 0:
+        elapsed = time.perf_counter() - started
+        eta = elapsed / i * (count - i)  # linear projection from rate so far
+        tail = f" | {elapsed:.0f}s elapsed, ~{eta:.0f}s left"
+    print(f"{Colors.CYAN}{label}: {progress:.1f}% ({i}/{count}){tail}{Colors.END}")
 
 
 def analyze_normal(words: list[str], matrix: np.ndarray, counts: np.ndarray, workers: int) -> dict[str, dict]:
