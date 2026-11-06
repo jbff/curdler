@@ -1,6 +1,6 @@
 # Wordle Co-Solver
 
-A Python script that helps solve Wordle puzzles by suggesting the most informative word at each step using information theory principles.
+A Python script that helps solve Wordle puzzles with exact information-theoretic analysis — an expected-turns-optimal opening in normal and hard mode, recomputed from the full candidate pool.
 
 ## How it works
 
@@ -58,19 +58,29 @@ Feedback format: G=Green, Y=Yellow, X=Gray
 Example: GYXGY means first letter green, second yellow, third gray, etc.
 Shortcuts: 'solved' = puzzle solved, 'yes' = last guess was correct
 
-🚀 Suggested starting word: RAISE
-📊 Information gain: 5.878 bits
+🚀 Suggested starting word: SLATE
+📊 Information gain: 5.858 bits
 
 ==================================================
-Enter feedback (G/Y/X) or 'solved': xyxxx
+Enter feedback (G/Y/X) or 'solved': xxyyx
 
 📊 Statistics:
-   • Possible solutions: 91
-   • Eliminated: 2218 (96.1%)
-   • Solutions: AGLOW, KOALA, LOAMY, LOYAL, MODAL, OFFAL, POLKA, ZONAL
+   • Possible solutions: 52
+   • Eliminated: 2306 (97.8%)
 
-💡 Next suggested word: CLOUT
-📊 Information gain: 4.123 bits
+💡 Next suggested word: TAINT
+📊 Information gain: 4.307 bits
+
+==================================================
+Enter feedback (G/Y/X) or 'solved': xgggg
+
+📊 Statistics:
+   • Possible solutions: 2
+   • Eliminated: 2356 (99.9%)
+   • Solutions: FAINT, PAINT
+
+💡 Next suggested word: FAINT
+📊 Information gain: 1.000 bits
 ```
 
 ## Hard Mode
@@ -92,175 +102,92 @@ The solver provides real-time statistics including:
 
 ## Algorithm Details
 
-The solver implements:
+The solver and the analyzer share one core (`wordle_core.py`):
 
-1. **Feedback Simulation**: For each possible guess, simulates all possible feedback outcomes
-2. **Entropy Calculation**: Uses Shannon entropy to measure information content
-3. **Solution Filtering**: Maintains a list of words compatible with all previous feedback
-4. **Information Maximization**: Always chooses the guess that provides the most expected information
+1. **Feedback matrix**: the feedback of every (guess, solution) pair is precomputed
+   once as a vectorized 2,358×2,358 table — compatibility filtering, candidate
+   bucketing, and hard-mode legality are all single lookups into it.
+2. **One policy, everywhere**: every suggestion (and every metric in the analysis)
+   is the *exact* expected-turns tree of one pinned rule: maximize information,
+   tie-break by fewer remaining candidates, then prefer a word that could still be
+   the answer, then list order. The metrics describe the solver you are actually playing.
+3. **Exact metrics**: expected and worst turns to solve are computed exactly for
+   every opening word, in normal and hard mode (no heuristics, no subsampling).
 
-This approach typically solves Wordle puzzles in 3-4 guesses on average!
+Under this policy the expected solve length is ~3.46–3.54 guesses (normal) from
+the best opening — typically 3–4 guesses as before. Word filtering also fixed a
+long-standing bug the old per-word filter had with repeated letters in guesses.
 
 ## Requirements
 
-- Python 3.6+
-- `wordles.txt` file with 5-letter words (one per line, uppercase)
-- Terminal that supports ANSI color codes 
+- Python 3.10+
+- numpy (the feedback matrix and per-turn searches are vectorized)
+- `wordles.txt` file with 5-letter words (one per line, uppercase); the answer
+  pool. Run `python3 analyze_starting_words.py` to (re)build `starting_words.json`
+  (~10 min on 20 cores; the solver falls back to a labeled default without it).
+- Terminal that supports ANSI color codes
 
-## 🔍 Comprehensive Starting Word Analysis
+## 🔍 Exact Starting Word Analysis
 
-Based on information theory analysis of all 2,331 possible Wordle solutions:
+Computed by `analyze_starting_words.py` over all 2,358 answers in `wordles.txt`
+(exact expected-turn trees per opening, normal and hard mode; full ranking in
+`starting_words.json`). Analysis takes ~8 min normal + ~3 min hard on 20 cores.
 
-### 📈 TOP 20 WORDS BY INFORMATION GAIN (Normal Mode)
+Metrics:
+- **information gain** — bits of Shannon entropy removed from the candidate pool
+  (one guess). Kept for comparison; it is *not* the headline metric.
+- **expected / worst turns to solve** — exactly what it says, under the solver's
+  policy. This is the headline metric: information is a means, turns are the score.
+- **expected remaining after 1 guess** and **largest remaining bucket** — the
+  single-guess split quality (smaller is better for both).
 
-🥇 **RAISE**: 5.881 bits  
-    Letters: R, A, I, S, E | Vowels: 3 | Split efficiency: 0.928
+### 📈 TOP 10 BY EXPECTED TURNS (Normal Mode)
 
-🥈 **SLATE**: 5.861 bits  
-    Letters: S, L, A, T, E | Vowels: 2 | Split efficiency: 0.904
+🥇 **SLATE**: 3.463 avg turns, worst 6
+🥈 **CRATE**: 3.471 avg turns, worst 6
+🥉 **SLANT**: 3.472 avg turns, worst 6
+4. **CRANE**: 3.472 avg turns, worst 6
+5. **LEAST**: 3.473 avg turns, worst 6
+6. **TRACE**: 3.473 avg turns, worst 6
+7. **STALE**: 3.480 avg turns, worst 6
+8. **STARE**: 3.483 avg turns, worst 6
+9. **SLICE**: 3.487 avg turns, worst 6
+10. **LANCE**: 3.487 avg turns, worst 6
 
-🥉 **IRATE**: 5.834 bits  
-    Letters: I, R, A, T, E | Vowels: 3 | Split efficiency: 0.917
+Best single-guess information: **RAISE** (5.881 bits), then SLATE (5.858).
+Notably, the entropy-optimal opener is *not* the turns-optimal opener: RAISE
+leaves a slightly lumpy distribution, which costs more expected turns than its
+extra bits are worth.
 
-4. **CRATE**: 5.830 bits  
-    Letters: C, R, A, T, E | Vowels: 2 | Split efficiency: 0.893
+### 🔒 TOP 10 BY EXPECTED TURNS (Hard Mode)
 
-5. **TRACE**: 5.827 bits  
-    Letters: T, R, A, C, E | Vowels: 2 | Split efficiency: 0.893
-
-6. **ARISE**: 5.824 bits  
-    Letters: A, R, I, S, E | Vowels: 3 | Split efficiency: 0.928
-
-7. **STARE**: 5.816 bits  
-    Letters: S, T, A, R, E | Vowels: 2 | Split efficiency: 0.903
-
-8. **SNARE**: 5.772 bits  
-    Letters: S, N, A, R, E | Vowels: 2 | Split efficiency: 0.905
-
-9. **AROSE**: 5.771 bits  
-    Letters: A, R, O, S, E | Vowels: 3 | Split efficiency: 0.921
-
-10. **LEAST**: 5.757 bits  
-    Letters: L, E, A, S, T | Vowels: 2 | Split efficiency: 0.904
-
-11. **STALE**: 5.747 bits  
-    Letters: S, T, A, L, E | Vowels: 2 | Split efficiency: 0.904
-
-12. **ALERT**: 5.743 bits  
-    Letters: A, L, E, R, T | Vowels: 2 | Split efficiency: 0.915
-
-13. **SANER**: 5.735 bits  
-    Letters: S, A, N, E, R | Vowels: 2 | Split efficiency: 0.905
-
-14. **CRANE**: 5.734 bits  
-    Letters: C, R, A, N, E | Vowels: 2 | Split efficiency: 0.885
-
-15. **ALTER**: 5.711 bits  
-    Letters: A, L, T, E, R | Vowels: 2 | Split efficiency: 0.915
-
-16. **LATER**: 5.706 bits  
-    Letters: L, A, T, E, R | Vowels: 2 | Split efficiency: 0.915
-
-17. **REACT**: 5.691 bits  
-    Letters: R, E, A, C, T | Vowels: 2 | Split efficiency: 0.893
-
-18. **TRADE**: 5.684 bits  
-    Letters: T, R, A, D, E | Vowels: 2 | Split efficiency: 0.884
-
-19. **LEANT**: 5.683 bits  
-    Letters: L, E, A, N, T | Vowels: 2 | Split efficiency: 0.910
-
-20. **ROAST**: 5.652 bits  
-    Letters: R, O, A, S, T | Vowels: 2 | Split efficiency: 0.886
-
-### 🔒 TOP 20 WORDS FOR HARD MODE
-
-*Lower scores are better (fewer remaining guesses on average)*
-
-🥇 **CANOE**: 47.8 avg remaining guesses  
-    Info gain: 5.509 bits | Letters: C, A, N, O, E
-
-🥈 **CAMEO**: 49.2 avg remaining guesses  
-    Info gain: 5.065 bits | Letters: C, A, M, E, O
-
-🥉 **SEPIA**: 50.6 avg remaining guesses  
-    Info gain: 5.166 bits | Letters: S, E, P, I, A
-
-4. **MEDIA**: 52.5 avg remaining guesses  
-    Info gain: 4.785 bits | Letters: M, E, D, I, A
-
-5. **RATIO**: 53.2 avg remaining guesses  
-    Info gain: 5.356 bits | Letters: R, A, T, I, O
-
-6. **LAYER**: 55.5 avg remaining guesses  
-    Info gain: 5.359 bits | Letters: L, A, Y, E, R
-
-7. **HATER**: 56.2 avg remaining guesses  
-    Info gain: 5.480 bits | Letters: H, A, T, E, R
-
-8. **HAUTE**: 56.6 avg remaining guesses  
-    Info gain: 5.283 bits | Letters: H, A, U, T, E
-
-9. **RADIO**: 56.6 avg remaining guesses  
-    Info gain: 5.059 bits | Letters: R, A, D, I, O
-
-10. **VALUE**: 56.8 avg remaining guesses  
-    Info gain: 4.886 bits | Letters: V, A, L, U, E
-
-11. **LASER**: 57.4 avg remaining guesses  
-    Info gain: 5.629 bits | Letters: L, A, S, E, R
-
-12. **RAISE**: 57.4 avg remaining guesses  
-    Info gain: 5.881 bits | Letters: R, A, I, S, E
-
-13. **VAGUE**: 57.5 avg remaining guesses  
-    Info gain: 4.504 bits | Letters: V, A, G, U, E
-
-14. **PATIO**: 57.8 avg remaining guesses  
-    Info gain: 4.974 bits | Letters: P, A, T, I, O
-
-15. **SAUTE**: 58.0 avg remaining guesses  
-    Info gain: 5.637 bits | Letters: S, A, U, T, E
-
-16. **PAYER**: 58.1 avg remaining guesses  
-    Info gain: 5.166 bits | Letters: P, A, Y, E, R
-
-17. **GAYER**: 58.8 avg remaining guesses  
-    Info gain: 5.079 bits | Letters: G, A, Y, E, R
-
-18. **LATER**: 58.8 avg remaining guesses  
-    Info gain: 5.706 bits | Letters: L, A, T, E, R
-
-19. **PASTE**: 58.8 avg remaining guesses  
-    Info gain: 5.429 bits | Letters: P, A, S, T, E
-
-20. **DELTA**: 59.1 avg remaining guesses  
-    Info gain: 5.238 bits | Letters: D, E, L, T, A
-
-### ⚖️ BALANCED RECOMMENDATIONS
-
-*Words that perform well in both modes:*
-
-- **ALTER**: 5.711 bits, 59.6 avg remaining
-- **CASTE**: 5.570 bits, 60.4 avg remaining  
-- **CATER**: 5.641 bits, 60.1 avg remaining
-- **LASER**: 5.629 bits, 57.4 avg remaining
-- **LATER**: 5.706 bits, 58.8 avg remaining
-- **PARSE**: 5.636 bits, 61.1 avg remaining
-- **RAISE**: 5.881 bits, 57.4 avg remaining
-- **RENAL**: 5.549 bits, 61.5 avg remaining
-- **SANER**: 5.735 bits, 59.1 avg remaining
-- **SAUTE**: 5.637 bits, 58.0 avg remaining
+🥇 **SLATE**: 3.539 avg turns, worst 8  (best 2nd guess for its most likely bucket: CRONY)
+🥈 **LEAST**: 3.542 avg turns, worst 8  (best 2nd guess: CRONY)
+🥉 **LEANT**: 3.550 avg turns, worst 9  (best 2nd guess: CROUP)
+4. **SLANT**: 3.552 avg turns, worst 8
+5. **TRACE**: 3.553 avg turns, worst 8
+6. **STALE**: 3.556 avg turns, worst 8
+7. **CRANE**: 3.560 avg turns, worst 8
+8. **CRATE**: 3.560 avg turns, worst 8
+9. **TRICE**: 3.565 avg turns, worst 8
+10. **REACT**: 3.566 avg turns, worst 8
 
 ### 🏆 FINAL RECOMMENDATIONS
 
-**For Normal Mode:**  
-🥇 **RAISE** - 5.881 bits of information  
-Letters: R, A, I, S, E | Vowels: 3
+**Use SLATE in both modes.** The margins behind it (CRANE/CRATE/TRACE, all
+within 0.01 turns) are inside measurement-irrelevant territory — these five
+openers are effectively interchangeable, and any of them is defensible. The old
+RAISE (normal) / CANOE (hard) recommendations ranked by the wrong metrics:
+entropy for normal mode, and a scenario heuristic for hard mode that measured
+nothing about solving.
 
-**For Hard Mode:**  
-🥇 **CANOE** - 47.8 avg remaining guesses  
-Letters: C, A, N, O, E | Vowels: 3
+CANOE's actual hard-mode cost under the exact metric: 3.608 avg turns —
+ranked outside the top 100. Against the NYTimes WordleBot it can still look
+strong, because their one-step scorer is weaker in hard mode than any
+exact-turns policy.
 
-💡 *Consider using different words for different modes*
-
+💡 *Word list notes*: `wordles.txt` doubles as the solution and guess pool.
+The NYTimes curates answers per-day (no static official list since 2022-11), so
+the list is a verified union: the original 2,315 source-code answers minus the
+six NYTimes-removed words, plus individually verified later daily answers.
+Re-run the analyzer after expanding it.
