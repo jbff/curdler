@@ -118,6 +118,13 @@ Under this policy the expected solve length is ~3.46–3.54 guesses (normal) fro
 the best opening — typically 3–4 guesses as before. Word filtering also fixed a
 long-standing bug the old per-word filter had with repeated letters in guesses.
 
+**Greedy, not globally optimal:** the policy picks the best word *for the current
+state* each turn. It is not a globally optimal decision tree, which could shave a
+few hundredths of a guess off the average (≈3.42 is achievable with a full
+look-ahead tree in normal mode). The trade is deliberate: greedy keeps every
+turn's decision instant, and its expected-turns cost is exactly what the analyzer
+measures — the metric and the play agree by construction.
+
 ## Requirements
 
 - Python 3.10+
@@ -186,8 +193,47 @@ ranked outside the top 100. Against the NYTimes WordleBot it can still look
 strong, because their one-step scorer is weaker in hard mode than any
 exact-turns policy.
 
-💡 *Word list notes*: `wordles.txt` doubles as the solution and guess pool.
-The NYTimes curates answers per-day (no static official list since 2022-11), so
-the list is a verified union: the original 2,315 source-code answers minus the
-six NYTimes-removed words, plus individually verified later daily answers.
-Re-run the analyzer after expanding it.
+### 🌳 Word list genealogy
+
+`wordles.txt` doubles as the solution and guess pool. Its provenance:
+
+1. The original Wordle source code (extracted Jan 2022) defines an **answer
+   list of 2,315** words scheduled through ~2027 and a much larger allowed-guess
+   pool (~12,972+, later expanded by NYT toward ~14,855).
+2. The NYTimes removed six answer words (AGORA, FIBRE, LYNCH, PUPAL, SLAVE,
+   WENCH) and stopped the static list in 2022-11 — answers are now chosen
+   per-day, so **no complete official list exists after that date**.
+3. This list = the NYT-era snapshot (2,309 words) plus **individually verified
+   later daily answers** (2024–2026 picks like GRIFT, GUNKY, PSHAW), each checked
+   against independent answer archives before joining. Guess-only words
+   (e.g. INSET, MUTED) are deliberately excluded — better too few valid
+   solutions than silent false positives.
+
+Because answers can now repeat (NYT began deliberately reusing words in 2026),
+the list only ever grows. After expanding it, re-run the analyzer (~11 min) —
+the solver detects a stale cache by word count and falls back to a labeled
+default opening otherwise.
+
+If guess-only words become interesting for the *guess* side (pure-information
+openers), that wants a second list — the official allowed-guesses pool —
+plumbed in as a separate candidate source; the matrix is already shaped for it.
+
+### ⚙️ How the analyzer computes this
+
+`wordle_core.py` precomputes the feedback of every (guess, answer) pair once —
+a vectorized 2,358 × 2,358 table (~6MB, ~1s to build). After that, every metric
+is arithmetic on that table:
+
+- Compatibility with any feedback pattern is a single lookup: word *w* survives
+  feedback *F* on guess *g* exactly when `matrix[g][w] == pattern(F)` — the same
+  lookup buckets answers and enforces hard-mode legality.
+- Per opening word, answers are grouped by feedback pattern ("buckets"); the
+  exact expected-turns tree recurses over buckets, choosing each turn's guess
+  with the shared policy, memoizing by state so shared subtrees solve once.
+- Deep-tree nodes with few remaining answers shortcut analytically (e.g. two
+  answers left is provably 1.5/2.0 turns); remaining small nodes compress
+  identical candidate rows first. Results are bit-identical to the plain slow
+  implementation — 10× faster.
+- The per-opening work runs under a 20-process fork pool; results reassemble
+  in opening order. Output: the tables above plus `starting_words.json`
+  (top-100 ranking per metric, the best hard-mode pair per opener).
