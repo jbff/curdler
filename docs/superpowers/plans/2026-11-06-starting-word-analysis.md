@@ -19,7 +19,7 @@
 - CLI behavior of `wordle_solver.py` (flags, prompts, output wording) unchanged.
 - Existing `wordle_solver.py` public API (`WordleSolver.__init__(word_list_file, hard_mode)`, `.get_initial_guess() -> (word, float)`, `.process_feedback(guess, feedback) -> (word, float)`, `.Colors`) unchanged.
 - Commit messages end with `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
-- Tests run from repo root: `python3 -I -m pytest tests/ -v` (`-I` isolates interpreter; no pytest plugin surprises).
+- Tests run from repo root: `PYTHONPATH=. python3 -m pytest tests/` (`python3 -I -m pytest` cannot import pytest in this environment: `-I` drops user site-packages).
 
 ## Review Focus
 
@@ -94,7 +94,7 @@ Also add:
 - Consumes: Task 1.
 
 - [ ] **Step 1: Failing tests**
-  - `test_bucket_equals_legacy_filter` — build `WordleSolver` (old code path), pick 5 random histories: assert new `compatibility_set` from matrix equals `[w for w in solver.possible_solutions if solver._is_word_compatible(w, guess, feedback)]` for every (g, F) sampled over the full word list (compare as word sets).
+  - `test_bucket_equals_legacy_filter` — build `WordleSolver` (old code path), sample 5 random real (guess, feedback) histories: assert `compatibility_set` from the matrix equals the truth reference `{w for w in solver.words if ''.join(solver._get_feedback(g, w)) == feedback}` for each, as word sets, with a source comment: legacy `_is_word_compatible` is NOT the reference — it is over-permissive on duplicate letters (a yellow and a gray occurrence of the same guess letter are not cross-consumed; real Wordle and `_get_feedback` require all occurrences to consume), e.g. legacy accepts single-E words against `XXYXX` feedback for guess `SWEEP`.
   - `test_entropy_matches_legacy` — for 5 random words, `entropy` from `counts_vs_S` row equals `solver._calculate_information_gain(word, solver.words)` within 1e-9.
   - `test_score_guess_values` — toy 3-word list `["AAAAA","BBBBB","CCCCC"]`: for guess `"AAAAA"` the buckets are all-green {AAAAA} and all-gray {BBBBB,CCCCC}, so entropy = `-(1/3)·log2(1/3) - (2/3)·log2(2/3)` ≈ **0.918296** (assert within 1e-6), expected_remaining = **5/3** (1.666667), worst = **2**.
 
@@ -200,7 +200,7 @@ Also add:
 - Produces: unchanged public API (Global Constraints). `WordleSolver` internals now: words, `matrix` (built in `__init__`), `possible_solutions` as `np.ndarray[int]`, `legal` mask (hard mode), `guess_history: list[tuple[str, int]]` (pattern ints, internal only). `get_initial_guess()` reads cache; `_filter_solutions` and next-guess search via core functions; hard-code `RAISE` only as labeled fallback.
 
 - [ ] **Step 1: Failing tests**
-  - `test_filter_equals_legacy` — construct old-style (feedback, guess) histories identical to Task 2's sampled cases; new filter result sets equal old `_filter_solutions` sets.
+  - `test_filter_equals_truth` — construct (feedback, guess) histories identical to Task 2's sampled cases; the new filter's result sets equal the truth reference `{w for w in words if feedback-equality}` (NOT the old `_filter_solutions`, which is over-permissive on duplicate letters — this replacement is a deliberate bug fix for the legacy word filter).
   - `test_initial_guess_from_cache` — write `starting_words.json` with `"best": {"expected_turns_normal": "CRANE", "hard_expected_turns": "TRAIL"}`; assert normal → `("CRANE", …)` and hard mode → `("TRAIL", …)`, both info-gain floats > 0 (computed vs full list).
   - `test_initial_guess_cache_missing`, `test_initial_guess_cache_corrupt`, `test_initial_guess_cache_stale_word` — corrupt: `"{not json"`; stale: best word not in word list; all → fallback `RAISE` and stdout (capsys) contains the literal `default` note.
   - `test_parse_feedback_rejects_invalid` — `""`, `"GYXY"`, `"GYXX"` and `"GYXYA"` variants → `ValueError` (pins existing CLI behavior; note: "XYXXX" lowercase input from README example must still work → `parse_feedback("xyxxx")` valid).
