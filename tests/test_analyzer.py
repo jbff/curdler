@@ -26,12 +26,19 @@ CACHE_PATH = analyzer.CACHE_PATH
 
 @pytest.fixture(autouse=True)
 def module_cache_file():
-    """Remove the cache the analyzer writes next to its module after each
-    test, unless the file was somehow already there (then leave it be)."""
-    existed = os.path.exists(CACHE_PATH)
+    """Keep the analyzer's module-dir cache out of the tests' reach: stash any
+    pre-existing cache aside, let the test do its worst, then delete whatever
+    the test wrote and restore the original. (A test that *creates* the file
+    while a real cache exists would otherwise silently replace it.)"""
+    stash = None
+    if os.path.exists(CACHE_PATH):
+        stash = CACHE_PATH + ".testbackup"
+        os.replace(CACHE_PATH, stash)
     yield
-    if not existed and os.path.exists(CACHE_PATH):
+    if os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
+    if stash is not None:
+        os.replace(stash, CACHE_PATH)
 
 
 def toy_matrix(words=None):
