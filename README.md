@@ -66,7 +66,7 @@ Enter feedback (G/Y/X) or 'solved': xxyyx
 
 📊 Statistics:
    • Possible solutions: 52
-   • Eliminated: 2306 (97.8%)
+   • Eliminated: 2307 (97.8%)
 
 💡 Next suggested word: TAINT
 📊 Information gain: 4.307 bits
@@ -76,7 +76,7 @@ Enter feedback (G/Y/X) or 'solved': xgggg
 
 📊 Statistics:
    • Possible solutions: 2
-   • Eliminated: 2356 (99.9%)
+   • Eliminated: 2357 (99.9%)
    • Solutions: FAINT, PAINT
 
 💡 Next suggested word: FAINT
