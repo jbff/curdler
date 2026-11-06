@@ -129,10 +129,10 @@ def test_initial_guess_cache_fallback(solver, cache_path, capsys, corrupt):
     if corrupt is not None:
         cache_path.write_text(corrupt)
     word, bits = solver.get_initial_guess()
-    assert word == "RAISE"
+    assert word == "SLATE"
     # Same bits the legacy entropy calculation gives for the full word list
     # (independent implementation, matching to float noise).
-    legacy_bits = solver._calculate_information_gain("RAISE", solver.words)
+    legacy_bits = solver._calculate_information_gain("SLATE", solver.words)
     assert abs(bits - legacy_bits) < 1e-9
     assert bits > 0
     assert "default" in capsys.readouterr().out
@@ -148,7 +148,7 @@ def test_initial_guess_word_count_mismatch(solver, cache_path, capsys):
         "best": {"expected_turns_normal": "CRANE"},
     }))
     word, _ = solver.get_initial_guess()
-    assert word == "RAISE"
+    assert word == "SLATE"
     assert "default" in capsys.readouterr().out
 
 

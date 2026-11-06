@@ -22,9 +22,11 @@ _CACHE_DIR = os.path.dirname(os.path.abspath(__file__))
 # at a fixture cache); relative to this module, not the caller's cwd.
 CACHE_PATH = os.path.join(_CACHE_DIR, "starting_words.json")
 
-# Hard-coded openings used ONLY when the analysis cache is unavailable — the
-# cache (Task 5) drives the real suggestion; these are the labeled fallbacks.
-DEFAULT_OPENING = "RAISE"
+# Openings used ONLY when the analysis cache is unavailable, invalid, or
+# stale: the labeled fallbacks. They are the analyzer's best openings at the
+# time of the last code/analysis refresh (2026-11-06: SLATE led normal AND
+# hard mode) — a frozen snapshot, not a live calculation.
+DEFAULT_OPENING = "SLATE"
 
 # Color codes for terminal output
 class Colors:

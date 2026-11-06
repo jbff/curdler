@@ -39,7 +39,7 @@ def test_pattern_constants():
 
 def test_build_words():
     words = wc.build_words()
-    assert len(words) == 2358
+    assert len(words) == 2359
     assert words[0] == "ABACK"
     assert all(w == w.upper() for w in words)
 
@@ -53,7 +53,7 @@ def real_matrix():
 def test_random_matrix_rows_match_scalar(real_matrix):
     words, matrix = real_matrix
     assert matrix.dtype == np.uint8
-    assert matrix.shape == (2358, 2358)
+    assert matrix.shape == (2359, 2359)
     rng = np.random.default_rng(12345)
     for _ in range(20):
         g, w = rng.integers(0, len(words), size=2)
