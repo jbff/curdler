@@ -1,192 +1,275 @@
 #!/usr/bin/env python3
 """
-Analyze all starting words for Wordle to find optimal choices for both normal and hard mode
+Analyze every starting word for Wordle: normal-mode opening metrics and
+exact hard-mode turn counts, all under the shipped solver policy
+(``wordle_core.select_guess`` / ``expected_and_worst_turns``). Results land
+in ``starting_words.json`` (repo root) for the solver to read.
 """
 
+import datetime
+import json
 import math
-from collections import Counter
-from wordle_solver import WordleSolver, Colors
+import multiprocessing
+import os
+import time
 
-def analyze_starting_word(solver, word):
-    """Analyze the information gain of a starting word."""
-    if word not in solver.words:
-        return None
-    
-    information_gain = solver._calculate_information_gain(word, solver.words)
-    
-    # Analyze letter distribution
-    letter_counts = Counter(word)
-    vowels = sum(1 for c in word if c in 'AEIOU')
-    consonants = 5 - vowels
-    
-    # Calculate letter frequency score (how common the letters are)
-    letter_frequency = {
-        'E': 12.0, 'T': 9.1, 'A': 8.2, 'O': 7.5, 'I': 7.0, 'N': 6.7, 'S': 6.3, 'H': 6.1,
-        'R': 6.0, 'D': 4.3, 'L': 4.0, 'C': 2.8, 'U': 2.8, 'M': 2.4, 'W': 2.4, 'F': 2.2,
-        'G': 2.0, 'Y': 2.0, 'P': 1.9, 'B': 1.5, 'V': 0.98, 'K': 0.77, 'J': 0.15, 'X': 0.15,
-        'Q': 0.10, 'Z': 0.07
+import numpy as np
+
+import wordle_core as wc
+from wordle_solver import Colors
+
+NORMAL_METRICS = [
+    "information_gain",
+    "expected_remaining_1",
+    "worst_case_1",
+    "expected_turns_normal",
+    "worst_turns_normal",
+]
+HARD_METRICS = ["hard_expected_turns", "hard_worst_turns"]
+METRICS = NORMAL_METRICS + HARD_METRICS
+# Fewer expected remaining is better, so these rank descending; everything
+# else (all the turn/worst-bucket metrics) ranks ascending.
+DESC_METRICS = {"information_gain", "expected_remaining_1"}
+RANKING_SIZE = 100
+HARD_PAIR_COUNT = 10
+
+# Per-mode working state, filled in by ``run_analysis`` before the fork pool
+# starts so every worker inherits words/matrix/counts without pickling them.
+_STATE: dict = {}
+
+
+def second_guess_for_largest_bucket(g: int, words: list[str], matrix: np.ndarray) -> str:
+    """Best hard-mode follow-up to opening ``g``: the policy's pick for its
+    largest feedback bucket, with legality narrowed to that bucket's pattern
+    (hard mode only allows guesses carrying the observed information).
+    """
+    row = matrix[g]
+    pattern = int(np.bincount(row, minlength=wc.N_PATTERNS).argmax())
+    s_bucket = np.flatnonzero(row == pattern)
+    legal = row == pattern
+    return words[wc.select_guess(s_bucket, legal, matrix)]
+
+
+def _opening_turns(
+    matrix: np.ndarray, memo: dict, legal: np.ndarray | None, g: int
+) -> tuple[float, int]:
+    """Exact ``(expected, worst)`` turns when the opening is forced to ``g``.
+
+    The policy picks its own first guess, so a pinned opening is evaluated one
+    level down with the same recursion ``expected_and_worst_turns`` applies:
+    play ``g``, solve the all-green bucket this turn, and play every other
+    bucket out under the policy with the hard-mode legal mask narrowed to the
+    observed pattern (``legal`` stays ``None`` in normal mode).
+    """
+    s_all = _STATE["s_all"]
+    patterns = matrix[g][s_all]
+    expected = 1.0
+    worst = 0
+    for pattern in np.unique(patterns):
+        if pattern == wc.PATTERN_ALL_GREEN:
+            continue  # solved this very turn — the leading 1 counts it
+        bucket = s_all[patterns == pattern]
+        child_legal = legal if legal is None else legal & (matrix[g, :] == pattern)
+        e_b, w_b = wc.expected_and_worst_turns(bucket, child_legal, matrix, memo)
+        expected += (bucket.size / s_all.size) * e_b
+        worst = max(worst, w_b)
+    return expected, worst + 1
+
+
+def _normal_job(g: int) -> tuple[int, dict]:
+    """Normal-mode metrics for opening ``g`` (pool worker / single path)."""
+    memo = _STATE["memo"]
+    entropy, expected_remaining, worst_bucket = wc.score_guess(
+        _STATE["counts"][g], _STATE["s_all"].size
+    )
+    e_turns, w_turns = _opening_turns(_STATE["matrix"], memo, None, g)
+    return g, {
+        "information_gain": float(entropy),
+        "expected_remaining_1": float(expected_remaining),
+        "worst_case_1": int(worst_bucket),
+        "expected_turns_normal": float(e_turns),
+        "worst_turns_normal": int(w_turns),
     }
-    
-    frequency_score = sum(letter_frequency.get(c, 0) for c in word)
-    
-    # Analyze feedback distribution
-    feedback_counts = Counter()
-    for solution in solver.words:
-        feedback = solver._get_feedback(word, solution)
-        feedback_str = ''.join(feedback)
-        feedback_counts[feedback_str] += 1
-    
-    # Calculate how well the word splits the solution space
-    max_group_size = max(feedback_counts.values()) if feedback_counts else 0
-    split_efficiency = 1 - (max_group_size / len(solver.words))
-    
-    return {
-        'word': word,
-        'information_gain': information_gain,
-        'vowels': vowels,
-        'consonants': consonants,
-        'frequency_score': frequency_score,
-        'split_efficiency': split_efficiency,
-        'feedback_distribution': feedback_counts
-    }
 
-def analyze_hard_mode_performance(solver, word, analysis_data):
-    """Analyze how well a word performs in hard mode scenarios."""
-    hard_mode_scores = []
-    
-    # Test various feedback scenarios
-    test_scenarios = [
-        ("XXXXX", "All gray"),
-        ("XXYXX", "One yellow in middle"),
-        ("GXXXX", "One green at start"),
-        ("XXGXX", "One green in middle"),
-        ("YXXXX", "One yellow at start"),
-        ("GGXXX", "Two greens at start"),
-        ("XXGGX", "Two greens in middle"),
-        ("GXGXX", "Two greens separated"),
-    ]
-    
-    for feedback_str, description in test_scenarios:
-        feedback = list(feedback_str)
-        
-        # Create a temporary solver to test this scenario
-        temp_solver = WordleSolver(hard_mode=True)
-        temp_solver.guess_history.append((word, feedback))
-        
-        # Count how many valid hard mode guesses remain
-        valid_guesses = [w for w in temp_solver.words if temp_solver._is_hard_mode_compatible(w)]
-        
-        # Score this scenario (fewer remaining guesses is better for hard mode)
-        scenario_score = len(valid_guesses)
-        hard_mode_scores.append(scenario_score)
-    
-    # Calculate average hard mode performance
-    avg_hard_mode_score = sum(hard_mode_scores) / len(hard_mode_scores)
-    analysis_data['hard_mode_score'] = avg_hard_mode_score
-    analysis_data['hard_mode_scenarios'] = hard_mode_scores
 
-def main():
-    solver = WordleSolver()
-    
-    print(f"{Colors.BOLD}{Colors.PURPLE}🔍 Comprehensive Wordle Starting Word Analysis{Colors.END}")
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.WHITE}Total solutions: {Colors.BOLD}{len(solver.words)}{Colors.END}")
-    print(f"{Colors.WHITE}Analyzing all words for optimal starting choices...{Colors.END}")
-    print()
-    
-    # Analyze all words (this will take some time)
-    print(f"{Colors.YELLOW}⏳ Analyzing all {len(solver.words)} words...{Colors.END}")
-    
-    all_results = []
-    progress_interval = max(1, len(solver.words) // 20)  # Show progress every 5%
-    
-    for i, word in enumerate(solver.words):
-        if i % progress_interval == 0:
-            progress = (i / len(solver.words)) * 100
-            print(f"{Colors.CYAN}Progress: {progress:.1f}% ({i}/{len(solver.words)}){Colors.END}")
-        
-        analysis = analyze_starting_word(solver, word)
-        if analysis:
-            analyze_hard_mode_performance(solver, word, analysis)
-            all_results.append(analysis)
-    
-    print(f"{Colors.GREEN}✅ Analysis complete!{Colors.END}")
-    print()
-    
-    # Sort by different criteria
-    by_info_gain = sorted(all_results, key=lambda x: x['information_gain'], reverse=True)
-    by_hard_mode = sorted(all_results, key=lambda x: x['hard_mode_score'])
-    by_frequency = sorted(all_results, key=lambda x: x['frequency_score'], reverse=True)
-    by_split_efficiency = sorted(all_results, key=lambda x: x['split_efficiency'], reverse=True)
-    
-    # Display top results for normal mode
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.GREEN}📈 TOP 20 WORDS BY INFORMATION GAIN (Normal Mode){Colors.END}")
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    
-    for i, result in enumerate(by_info_gain[:20], 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i:2d}."
-        word = result['word']
-        info_gain = result['information_gain']
-        vowels = result['vowels']
-        consonants = result['consonants']
-        split_eff = result['split_efficiency']
-        
-        print(f"{medal} {Colors.BOLD}{word}{Colors.END}: {Colors.BLUE}{info_gain:.3f}{Colors.END} bits")
-        print(f"    {Colors.CYAN}Letters:{Colors.END} {', '.join(word)} | {Colors.CYAN}Vowels:{Colors.END} {vowels} | {Colors.CYAN}Split efficiency:{Colors.END} {split_eff:.3f}")
-    
-    # Display top results for hard mode
-    print(f"\n{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.YELLOW}🔒 TOP 20 WORDS FOR HARD MODE{Colors.END}")
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.WHITE}Lower scores are better (fewer remaining guesses on average){Colors.END}")
-    
-    for i, result in enumerate(by_hard_mode[:20], 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i:2d}."
-        word = result['word']
-        hard_mode_score = result['hard_mode_score']
-        info_gain = result['information_gain']
-        
-        print(f"{medal} {Colors.BOLD}{word}{Colors.END}: {Colors.YELLOW}{hard_mode_score:.1f}{Colors.END} avg remaining guesses")
-        print(f"    {Colors.CYAN}Info gain:{Colors.END} {info_gain:.3f} bits | {Colors.CYAN}Letters:{Colors.END} {', '.join(word)}")
-    
-    # Display balanced recommendations
-    print(f"\n{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.PURPLE}⚖️  BALANCED RECOMMENDATIONS{Colors.END}")
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    
-    # Find words that are good in both modes
-    top_info_words = set(result['word'] for result in by_info_gain[:50])
-    top_hard_words = set(result['word'] for result in by_hard_mode[:50])
-    balanced_words = top_info_words.intersection(top_hard_words)
-    
-    if balanced_words:
-        print(f"{Colors.GREEN}Words that perform well in both modes:{Colors.END}")
-        for word in sorted(balanced_words)[:10]:
-            info_result = next(r for r in by_info_gain if r['word'] == word)
-            hard_result = next(r for r in by_hard_mode if r['word'] == word)
-            print(f"  {Colors.BOLD}{word}{Colors.END}: {Colors.BLUE}{info_result['information_gain']:.3f}{Colors.END} bits, {Colors.YELLOW}{hard_result['hard_mode_score']:.1f}{Colors.END} avg remaining")
-    
-    # Final recommendations
-    print(f"\n{Colors.CYAN}{'='*60}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.GREEN}🏆 FINAL RECOMMENDATIONS{Colors.END}")
-    print(f"{Colors.CYAN}{'='*60}{Colors.END}")
-    
-    best_normal = by_info_gain[0]
-    best_hard = by_hard_mode[0]
-    
-    print(f"{Colors.GREEN}For Normal Mode:{Colors.END}")
-    print(f"  {Colors.BOLD}{best_normal['word']}{Colors.END} - {Colors.BLUE}{best_normal['information_gain']:.3f}{Colors.END} bits of information")
-    print(f"  Letters: {', '.join(best_normal['word'])} | Vowels: {best_normal['vowels']}")
-    
-    print(f"\n{Colors.YELLOW}For Hard Mode:{Colors.END}")
-    print(f"  {Colors.BOLD}{best_hard['word']}{Colors.END} - {Colors.YELLOW}{best_hard['hard_mode_score']:.1f}{Colors.END} avg remaining guesses")
-    print(f"  Letters: {', '.join(best_hard['word'])} | Vowels: {best_hard['vowels']}")
-    
-    if best_normal['word'] == best_hard['word']:
-        print(f"\n{Colors.GREEN}🎉 {best_normal['word']} is optimal for both modes!{Colors.END}")
+def _hard_job(g: int) -> tuple[int, dict]:
+    """Hard-mode metrics for opening ``g`` (pool worker / single path)."""
+    entry = {"hard_expected_turns": math.inf, "hard_worst_turns": math.inf}
+    try:
+        e_turns, w_turns = _opening_turns(
+            _STATE["matrix"], _STATE["memo"], _STATE["legal"], g
+        )
+        entry = {"hard_expected_turns": float(e_turns), "hard_worst_turns": int(w_turns)}
+    except ValueError as exc:
+        if str(exc) != "hard-mode dead end":
+            raise
+    if _STATE["best_word_for_pair"]:
+        entry["hard_pair"] = second_guess_for_largest_bucket(
+            g, _STATE["words"], _STATE["matrix"]
+        )
+    return g, entry
+
+
+def _run_jobs(job, count: int, workers: int, label: str) -> list:
+    """Run ``job`` over opening indices ``0..count-1``, in order.
+
+    ``workers <= 1`` runs single-process. Otherwise a fork pool inherits the
+    already-built matrix (built before the pool starts) and ``imap`` reassembles
+    results strictly in opening order — so both paths return identical results.
+    """
+    interval = max(1, count // 20)
+    results = []
+    if workers <= 1:
+        for i in range(count):
+            if i % interval == 0:
+                _print_progress(label, i, count)
+            results.append(job(i))
     else:
-        print(f"\n{Colors.CYAN}💡 Consider using different words for different modes{Colors.END}")
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(workers) as pool:
+            for i, result in enumerate(pool.imap(job, range(count))):
+                if i % interval == 0:
+                    _print_progress(label, i, count)
+                results.append(result)
+    _print_progress(label, count, count, done=True)
+    return results
+
+
+def _print_progress(label: str, i: int, count: int, done: bool = False) -> None:
+    if done:
+        print(f"{Colors.GREEN}✅ {label} complete{Colors.END}")
+        return
+    progress = (i / count) * 100 if count else 100.0
+    print(f"{Colors.CYAN}{label}: {progress:.1f}% ({i}/{count}){Colors.END}")
+
+
+def analyze_normal(words: list[str], matrix: np.ndarray, counts: np.ndarray, workers: int) -> dict[str, dict]:
+    """Opening metrics for every word in normal mode (cheap + exact turns).
+
+    ``counts`` is the ``counts_vs_S(matrix, all_solutions)`` pass that powers
+    the cheap per-opening metrics (entropy / expected remaining / worst
+    bucket); the exact turn counts reuse the policy recursion with one shared
+    memo per call, and identical results whether one process runs everything
+    or a fork pool splits the openings.
+    """
+    _STATE.update(
+        words=words,
+        matrix=matrix,
+        counts=counts,
+        s_all=np.arange(len(words), dtype=np.intp),
+        memo={},  # fresh per mode call: keyed by (S bytes, legal bytes)
+    )
+    results = _run_jobs(_normal_job, len(words), workers, "⏳ Normal mode")
+    return {words[g]: metrics for g, metrics in results}
+
+
+def analyze_hard(
+    words: list[str], matrix: np.ndarray, workers: int, best_word_for_pair: bool = False
+) -> dict[str, dict]:
+    """Exact hard-mode turn counts per opening (dead ends recorded as ``inf``).
+
+    With ``best_word_for_pair`` each entry also carries the policy's best
+    follow-up to the opening's largest bucket (the ``hard_pairs`` report data).
+    """
+    _STATE.update(
+        words=words,
+        matrix=matrix,
+        s_all=np.arange(len(words), dtype=np.intp),
+        legal=np.ones(len(words), dtype=bool),
+        memo={},
+        best_word_for_pair=best_word_for_pair,
+    )
+    results = _run_jobs(_hard_job, len(words), workers, "🔒 Hard mode")
+    return {words[g]: metrics for g, metrics in results}
+
+
+def _fmt(value: float) -> str:
+    if value == math.inf:
+        return "inf (dead end)"
+    return f"{value:.4f}"
+
+
+def _print_rankings(rankings: dict[str, list]) -> None:
+    print(f"\n{Colors.CYAN}{'=' * 60}{Colors.END}")
+    print(f"{Colors.BOLD}{Colors.PURPLE}📈 TOP 10 PER METRIC{Colors.END}")
+    for metric in METRICS:
+        print(f"\n{Colors.BOLD}{Colors.GREEN}{metric}{Colors.END}")
+        for i, (word, value) in enumerate(rankings[metric][:10], 1):
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i:2d}."
+            print(f"  {medal} {Colors.BOLD}{word}{Colors.END}: {Colors.BLUE}{_fmt(value)}{Colors.END}")
+
+
+def _print_hard_pairs(hard: dict[str, dict], pairs: list) -> None:
+    print(f"\n{Colors.CYAN}{'=' * 60}{Colors.END}")
+    print(f"{Colors.BOLD}{Colors.YELLOW}🔒 TOP 3 HARD-MODE OPENING PAIRS{Colors.END}")
+    for opening, second in pairs[:3]:
+        entry = hard[opening]
+        print(
+            f"  {Colors.BOLD}{opening}{Colors.END} → {Colors.BOLD}{second}{Colors.END}"
+            f"  (hard expected {_fmt(entry['hard_expected_turns'])},"
+            f" worst {_fmt(entry['hard_worst_turns'])})"
+        )
+
+
+def run_analysis(words: list[str] | None = None, matrix: np.ndarray | None = None, workers: int | None = None) -> dict:
+    """Analyze the full opening list and write the ``starting_words.json`` cache.
+
+    ``words`` / ``matrix`` default to ``build_words()`` / its feedback matrix
+    (tests inject toy lists); ``workers`` defaults to every core.
+    """
+    if words is None:
+        words = wc.build_words()
+    if matrix is None:
+        matrix = wc.build_feedback_matrix(words)
+    if workers is None:
+        workers = os.cpu_count() or 1
+
+    print(f"{Colors.BOLD}{Colors.PURPLE}🔍 Exact Starting Word Analysis{Colors.END}")
+    print(f"{Colors.CYAN}{'=' * 60}{Colors.END}")
+    print(f"{Colors.WHITE}Total words: {Colors.BOLD}{len(words)}{Colors.END}"
+          f" | workers: {Colors.BOLD}{workers}{Colors.END}\n")
+
+    counts = wc.counts_vs_S(matrix, np.arange(len(words), dtype=np.intp))
+    started = time.perf_counter()
+    normal = analyze_normal(words, matrix, counts, workers)
+    normal_time = time.perf_counter() - started
+    print(f"{Colors.WHITE}Normal mode took {normal_time:.1f}s{Colors.END}")
+    started = time.perf_counter()
+    hard = analyze_hard(words, matrix, workers, best_word_for_pair=True)
+    hard_time = time.perf_counter() - started
+    print(f"{Colors.WHITE}Hard mode took {hard_time:.1f}s{Colors.END}\n")
+
+    entries = {word: {**normal[word], **hard[word]} for word in words}
+
+    # Rankings: pinned tie-break — value order first (stable sort over the
+    # alphabetical pre-sort keeps ties alphabetical), top N kept.
+    rankings: dict[str, list] = {}
+    for metric in METRICS:
+        ranked = sorted(entries.items(), key=lambda item: item[0])
+        ranked = sorted(ranked, key=lambda item: item[1][metric], reverse=metric in DESC_METRICS)
+        rankings[metric] = [[word, entry[metric]] for word, entry in ranked[:RANKING_SIZE]]
+
+    hard_pairs = [[word, hard[word]["hard_pair"]] for word, _ in rankings["hard_expected_turns"][:HARD_PAIR_COUNT]]
+
+    cache = {
+        "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "word_count": len(words),
+        "best": {metric: rankings[metric][0][0] for metric in METRICS},
+        "rankings": rankings,
+        "hard_pairs": hard_pairs,
+    }
+
+    _print_rankings(rankings)
+    _print_hard_pairs(hard, hard_pairs)
+
+    with open("starting_words.json", "w") as f:
+        json.dump(cache, f, indent=2)
+
+    dead_ends = sum(1 for entry in hard.values() if entry["hard_expected_turns"] == math.inf)
+    print(f"\n{Colors.GREEN}💾 Cache written to starting_words.json{Colors.END}"
+          f" (hard-mode dead ends: {dead_ends})")
+    return cache
+
 
 if __name__ == "__main__":
-    main() 
+    run_analysis()
