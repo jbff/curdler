@@ -154,3 +154,62 @@ def score_guess(counts_row: np.ndarray, S_size: int) -> tuple[float, float, int]
     entropy = float(-(p * np.log2(p)).sum())
     expected_remaining = float((nonzero * nonzero).sum() / S_size)
     return entropy, expected_remaining, int(counts.max())
+
+
+def select_guess(S: np.ndarray, legal: np.ndarray | None, matrix: np.ndarray) -> int:
+    """Pick the best guess index for the solution set ``S`` (Task 3 policy).
+
+    Tie-break chain, in binding order — the first rule that breaks the tie
+    wins, and each stage narrows the set of survivors:
+
+    1. argmax entropy (pattern unpredictability of the guess against ``S``),
+    2. argmin expected remaining (probability-weighted bucket size),
+    3. a candidate that is itself in ``S`` (the solve-out guess),
+    4. list order (lowest index first).
+
+    ``legal`` is ``None`` for "all candidates legal", otherwise a boolean
+    mask over candidate indices (hard mode). Raises
+    ``ValueError("no legal candidates")`` when nothing is legal. Empty
+    ``S`` is out of contract and never passed.
+
+    Edge case: when ``S`` holds a single solution, the chain above already
+    reduces to that member when it is legal (all rows tie at entropy 0 /
+    expected remaining 1), but we return it explicitly so the forced win
+    never touches the metrics.
+    """
+    S = np.asarray(S, dtype=np.intp)
+    if legal is None:
+        mask = np.ones(matrix.shape[0], dtype=bool)
+    else:
+        mask = np.asarray(legal, dtype=bool)
+    candidates = np.flatnonzero(mask)  # legal guess indices, ascending
+    if candidates.size == 0:
+        raise ValueError("no legal candidates")
+
+    # Forced win: exactly one solution left and it is a legal guess.
+    # (When it is illegal, every metric ties and the member tie-break has
+    # no member to pick, so the chain falls through to list order below.)
+    if S.size == 1 and mask[S[0]]:
+        return int(S[0])
+
+    counts = counts_vs_S(matrix, S)[candidates].astype(np.float64)  # (L, 243)
+    s_size = S.size
+
+    # Entropy of each candidate's bucket distribution, vectorized over
+    # score_guess's definition: sum over c > 0 of (c/|S|) * log2(|S|/c).
+    # The zero-masked log2 keeps c == 0 cells contributing 0 (never log2(0)).
+    log_c = np.zeros_like(counts)
+    np.log2(counts, out=log_c, where=counts > 0)
+    entropy = (counts * (np.log2(s_size) - log_c)).sum(axis=1) / s_size
+    expected_remaining = (counts * counts).sum(axis=1) / s_size
+
+    # The chain itself: narrow the survivors at each stage. flatnonzero
+    # results stay sorted, and `best` indexes into `candidates`, so
+    # whatever survives stage 4 keeps list order.
+    best = np.flatnonzero(entropy == entropy.max())  # 1. argmax entropy
+    er = expected_remaining[best]  # 2. argmin expected remaining
+    best = best[er == er.min()]
+    in_S = np.isin(candidates[best], S)  # 3. a candidate that is itself in S
+    if in_S.any():
+        best = best[in_S]
+    return int(candidates[best[0]])  # 4. list order (lowest index first)
