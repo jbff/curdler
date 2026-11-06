@@ -14,7 +14,7 @@
 
 - Word list `wordles.txt`: 2,334 unique 5-letter uppercase words; do not modify it.
 - Feedback pattern encoding: integer 0–242, base-3, positional: contribution per index i is `(2*green + 1*yellow) * 3**i`; all-green = 242.
-- Policy (single definition, shared by solver and analyzer): `argmax entropy; tie-break `argmin expected remaining; tie-break candidate ∈ S; tie-break list order`. If |S| == 1 and the sole candidate is legal → that word; if |S| == 1 illegal (hard-mode dead end) → best among legal.
+- Policy (single definition, shared by solver and analyzer): `argmax entropy; tie-break `argmin expected remaining; tie-break candidate ∈ S; tie-break list order`. If |S| == 1 and the sole candidate is legal → that word; if |S| == 1 illegal (hard-mode dead end) → raise `ValueError("hard-mode dead end")` (superseded 2026-11-06 by final review: "best among legal" cannot shrink S and would recurse to the depth guard).
 - Every headline metric exact: no search caps, no subsampling, no scenario shortcuts.
 - CLI behavior of `wordle_solver.py` (flags, prompts, output wording) unchanged.
 - Existing `wordle_solver.py` public API (`WordleSolver.__init__(word_list_file, hard_mode)`, `.get_initial_guess() -> (word, float)`, `.process_feedback(guess, feedback) -> (word, float)`, `.Colors`) unchanged.

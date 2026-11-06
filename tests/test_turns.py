@@ -111,3 +111,8 @@ def test_opening_matches_full_wordlist(real_matrix):
     assert e_aback > 1
     assert e_raise != e_aback
     assert e_raise < e_aback
+    # Worst-turns sanity: 1 <= w <= 11. The ceiling sits just under the
+    # depth guard (12) in expected_and_worst_turns, so a policy-bug or cap
+    # regression surfaces here instead of as an AssertionError.
+    assert 1 <= w_raise <= 11
+    assert 1 <= w_aback <= 11

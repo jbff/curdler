@@ -18,6 +18,10 @@ import numpy as np
 import wordle_core as wc
 from wordle_solver import Colors
 
+# Written next to this module (mirroring wordle_solver.CACHE_PATH), never the
+# caller's cwd; for the repo module that is the repo root the solver reads.
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "starting_words.json")
+
 NORMAL_METRICS = [
     "information_gain",
     "expected_remaining_1",
@@ -262,7 +266,7 @@ def run_analysis(words: list[str] | None = None, matrix: np.ndarray | None = Non
     _print_rankings(rankings)
     _print_hard_pairs(hard, hard_pairs)
 
-    with open("starting_words.json", "w") as f:
+    with open(CACHE_PATH, "w") as f:
         json.dump(cache, f, indent=2)
 
     dead_ends = sum(1 for entry in hard.values() if entry["hard_expected_turns"] == math.inf)

@@ -2,13 +2,15 @@
 
 Small toy word lists injected through run_analysis's ``words`` / ``matrix``
 params, so no test touches the real 2,334-word run. ``run_analysis`` writes
-its cache to the current directory, so every test chdirs into ``tmp_path``
-to keep the repo root pristine.
+its cache next to the analyzer module (mirroring the solver's cache read), so
+every test chdirs into ``tmp_path`` while the autouse fixture below removes
+the module-side cache file afterwards to keep the repo root pristine.
 """
 
 import datetime
 import json
 import math
+import os
 
 import numpy as np
 import pytest
@@ -17,6 +19,19 @@ import analyze_starting_words as analyzer
 import wordle_core as wc
 
 TOY = ["AAAAA", "BBBBB", "CCCCC"]
+
+# The analyzer writes next to its module (the repo root), not the cwd.
+CACHE_PATH = analyzer.CACHE_PATH
+
+
+@pytest.fixture(autouse=True)
+def module_cache_file():
+    """Remove the cache the analyzer writes next to its module after each
+    test, unless the file was somehow already there (then leave it be)."""
+    existed = os.path.exists(CACHE_PATH)
+    yield
+    if not existed and os.path.exists(CACHE_PATH):
+        os.remove(CACHE_PATH)
 
 
 def toy_matrix(words=None):
@@ -74,7 +89,7 @@ def test_cache_schema(at_root, counts):
         assert second in TOY
 
     # The cache on disk is well-formed and identical to the returned dict.
-    with open("starting_words.json") as f:
+    with open(CACHE_PATH) as f:
         assert json.load(f) == result
 
 
@@ -94,7 +109,7 @@ def test_dead_end_is_inf(at_root, counts, monkeypatch):
         assert all(value == math.inf for _, value in result["rankings"][metric])
         assert result["best"][metric] in TOY  # best survives, recorded not hidden
     assert result["hard_pairs"]  # pairing still computed despite the dead ends
-    with open("starting_words.json") as f:  # Infinity round-trips through json
+    with open(CACHE_PATH) as f:  # Infinity round-trips through json
         reloaded = json.load(f)
     assert reloaded["best"]["hard_expected_turns"] == result["best"]["hard_expected_turns"]
 
@@ -116,3 +131,14 @@ def test_worker_split_matches_single(at_root, counts):
     assert set(hard_single["AAAAA"]) == {
         "hard_expected_turns", "hard_worst_turns", "hard_pair",
     }
+
+
+def test_cache_lands_next_to_module(tmp_path, monkeypatch):
+    # The cache is written next to the analyzer module (mirroring
+    # wordle_solver.CACHE_PATH), never relative to the caller's cwd. The
+    # module dir is the repo root here, which the autouse fixture above
+    # cleans afterwards.
+    monkeypatch.chdir(tmp_path)
+    analyzer.run_analysis(words=TOY, matrix=toy_matrix(), workers=1)
+    assert os.path.exists(CACHE_PATH)          # next to the module ...
+    assert not os.path.exists(tmp_path / "starting_words.json")  # ... not the cwd

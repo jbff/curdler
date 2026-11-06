@@ -131,7 +131,9 @@ class WordleSolver:
 
         The cache is the analyzer's starting_words.json; only the opening
         metric this instance plays under is read. Any failure to parse, a
-        missing/best-of-wrong-shape entry, or a stale word (not in the word
+        missing/best-of-wrong-shape entry, a word count not matching this
+        instance's list (a cache written against a different word list —
+        ranking order is list-specific), or a stale word (not in the word
         list) means no cache, never a guessed suggestion.
         """
         metric = "hard_expected_turns" if self.hard_mode else "expected_turns_normal"
@@ -142,6 +144,10 @@ class WordleSolver:
             return None
         best = cache.get("best") if isinstance(cache, dict) else None
         if not isinstance(best, dict):
+            return None
+        word_count = cache.get("word_count")
+        if (not isinstance(word_count, int) or isinstance(word_count, bool)
+                or word_count != len(self.words)):
             return None
         word = best.get(metric)
         if isinstance(word, str) and word in self.words:
@@ -170,6 +176,11 @@ class WordleSolver:
         # lives in this very bucket, so the encoding matches the matrix.
         pattern = sum((2 if f == 'G' else 1 if f == 'Y' else 0) * 3**i
                       for i, f in enumerate(feedback))
+        # Snapshot for the inconsistent-feedback guard below: on empty S the
+        # state is restored to exactly this, so the caller re-enters with the
+        # pre-entry state intact.
+        prev_solutions = self.possible_solutions
+        prev_legal = self.legal
         self.guess_history.append((guess, pattern))
         self.step_count += 1
 
@@ -197,7 +208,7 @@ class WordleSolver:
         print(f"   {Colors.BLUE}•{Colors.END} Possible solutions: {Colors.BOLD}{total_solutions}{Colors.END}")
         print(f"   {Colors.BLUE}•{Colors.END} Eliminated: {Colors.BOLD}{len(self.words) - total_solutions}{Colors.END} ({100 - percentage_remaining:.1f}%)")
 
-        if total_solutions <= 10:
+        if total_solutions > 0 and total_solutions <= 10:
             remaining = ', '.join(self.words[int(i)] for i in self.possible_solutions)
             print(f"   {Colors.BLUE}•{Colors.END} Solutions: {Colors.GREEN}{remaining}{Colors.END}")
 
@@ -205,13 +216,26 @@ class WordleSolver:
         if total_solutions == 1:
             return self.words[int(self.possible_solutions[0])], 0.0
 
+        # Inconsistent feedback (no word can produce it — a mistyped line):
+        # a user-input error, recoverable. Undo the entry entirely so the
+        # solver state stays valid for the re-entry, tell the user, and
+        # return the None sentinel; main() reoffers the previous suggestion
+        # and reprompts for feedback. Nothing invalid enters solver state.
+        if total_solutions == 0:
+            self.possible_solutions = prev_solutions
+            self.legal = prev_legal
+            self.guess_history.pop()
+            self.step_count -= 1
+            print(f"{Colors.RED}❌ No word matches that feedback — check it and try again.{Colors.END}")
+            return None, 0.0
+
         # Policy pick (shared core): entropy/expected-remaining tie-breaks over
-        # the matrix, with hard-mode legality applied. An empty legal set
-        # (impossible in practice: the surviving solution is itself always
-        # still legal, because legality is narrowed by the same predicates
-        # that narrow the solution set) raises ValueError("no legal
-        # candidates") here — AFTER the statistics block above — and the CLI
-        # propagates it; we do not paper over a dead end.
+        # the matrix, with hard-mode legality applied. The guard above means
+        # select_guess only ever sees a non-empty S here (inconsistent
+        # feedback is absorbed before this line); with legality narrowed by
+        # the same matrix predicates as S, the surviving solution is itself
+        # legal, so S ⊆ legal — a dead end needs inconsistent input, which
+        # never reaches this point.
         next_idx = wc.select_guess(self.possible_solutions, self.legal, self.matrix)
 
         # Report the suggested word's own information gain against the
@@ -309,6 +333,13 @@ def main():
 
         # Get next guess
         next_guess, next_info = solver.process_feedback(initial_guess, feedback)
+
+        if next_guess is None:
+            # Inconsistent feedback: process_feedback restored its state, so
+            # the same suggestion stands — reoffer it and reprompt for
+            # feedback. A typo costs one line, nothing else.
+            print(f"\n{Colors.BOLD}{Colors.GREEN}💡 Next suggested word: {Colors.END}{Colors.BOLD}{initial_guess}{Colors.END}")
+            continue
 
         # Check if we have only one solution left
         if solver.possible_solutions.size == 1:

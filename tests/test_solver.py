@@ -100,6 +100,9 @@ def test_process_feedback_prints_statistics(solver, capsys):
 
 def test_initial_guess_from_cache(solver, hard_solver, cache_path, capsys):
     cache_path.write_text(json.dumps({
+        # Matching word count: a cache written for a different list is stale
+        # and must fall back (pinned by test_initial_guess_word_count_mismatch).
+        "word_count": len(solver.words),
         "best": {"expected_turns_normal": "CRANE", "hard_expected_turns": "TRAIL"}
     }))
     assert solver.get_initial_guess() == (
@@ -135,6 +138,20 @@ def test_initial_guess_cache_fallback(solver, cache_path, capsys, corrupt):
     assert "default" in capsys.readouterr().out
 
 
+def test_initial_guess_word_count_mismatch(solver, cache_path, capsys):
+    # The word count must be present AND equal to the instance's list length:
+    # a cache written against a different word list has list-order- specific
+    # rankings, so its "best" is stale. Best word itself is valid here — only
+    # the count is off — and the fallback + note must still fire.
+    cache_path.write_text(json.dumps({
+        "word_count": len(solver.words) + 1,
+        "best": {"expected_turns_normal": "CRANE"},
+    }))
+    word, _ = solver.get_initial_guess()
+    assert word == "RAISE"
+    assert "default" in capsys.readouterr().out
+
+
 # --- parse_feedback pins (existing CLI behavior) --------------------------
 
 
@@ -166,3 +183,50 @@ def test_interactive_flow_smoke(monkeypatch, capsys):
     line = next(line for line in out.splitlines() if "Next suggested word" in line)
     plain = re.sub(r"\033\[[0-9;]*m", "", line)
     assert bool(plain.split(":")[-1].strip())
+
+
+def test_inconsistent_feedback_recovers(solver, cache_path, monkeypatch, capsys):
+    # A mistyped feedback line empties S (no word can produce YGYXX after
+    # CRANE). The guard must absorb it as user-input error: keep solver state
+    # valid, tell the user, and let main() reoffer the previous suggestion —
+    # no crash, no committed state.
+    cache_path.write_text(json.dumps({
+        "word_count": len(solver.words),
+        "best": {"expected_turns_normal": "CRANE"},
+    }))
+    monkeypatch.setattr(sys, "argv", ["wordle_solver.py"])
+    answers = ["YGYXX", "quit"]
+
+    def fake_input(prompt=""):
+        return answers.pop(0) if answers else "quit"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    # Capture the solver instance main() builds to assert its internal state.
+    created = []
+    real_cls = wordle_solver.WordleSolver
+
+    def spy_cls(*args, **kwargs):
+        instance = real_cls(*args, **kwargs)
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(wordle_solver, "WordleSolver", spy_cls)
+    wordle_solver.main()  # must not raise
+    out = capsys.readouterr().out
+    assert "❌ No word matches that feedback — check it and try again." in out
+    # The failure's statistics block showed the eliminated set (0 remaining).
+    C = wordle_solver.Colors
+    assert f"{C.BLUE}•{C.END} Possible solutions: {C.BOLD}0{C.END}" in out
+    # The previous suggestion stands: exactly one next-suggestion line, CRANE.
+    suggestion_lines = [line for line in out.splitlines() if "Next suggested word" in line]
+    assert len(suggestion_lines) == 1
+    assert "CRANE" in re.sub(r"\033\[[0-9;]*m", "", suggestion_lines[0])
+    # Nothing of the failed entry was committed to solver state.
+    instance = created[0]
+    assert instance.guess_history == []
+    assert instance.step_count == 0
+    np.testing.assert_array_equal(
+        instance.possible_solutions, np.arange(len(instance.words), dtype=np.intp)
+    )
+    assert instance.legal is None
