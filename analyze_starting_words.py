@@ -33,7 +33,7 @@ HARD_METRICS = ["hard_expected_turns", "hard_worst_turns"]
 METRICS = NORMAL_METRICS + HARD_METRICS
 # Fewer expected remaining is better, so these rank descending; everything
 # else (all the turn/worst-bucket metrics) ranks ascending.
-DESC_METRICS = {"information_gain", "expected_remaining_1"}
+DESC_METRICS = {"information_gain"}  # fewer-remaining metrics rank ascending (smaller = better)
 RANKING_SIZE = 100
 HARD_PAIR_COUNT = 10
 

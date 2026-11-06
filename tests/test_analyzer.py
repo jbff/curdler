@@ -74,7 +74,7 @@ def test_cache_schema(at_root, counts):
         assert len(words_ranked) == len(set(words_ranked))  # one entry per word
         # Pinned tie-break: value order (desc for fewer-better metrics, asc
         # otherwise) with alphabetical words inside ties.
-        desc = metric in ("information_gain", "expected_remaining_1")
+        desc = metric in ("information_gain",)
         for (w1, v1), (w2, v2) in zip(pairs, pairs[1:]):
             if v1 == v2:
                 assert w1 < w2
