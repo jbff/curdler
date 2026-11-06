@@ -156,6 +156,22 @@ def score_guess(counts_row: np.ndarray, S_size: int) -> tuple[float, float, int]
     return entropy, expected_remaining, int(counts.max())
 
 
+_POW243 = np.int64(243) ** np.arange(8, dtype=np.int64)
+
+def _score_counts_block(counts: np.ndarray, s_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Row-wise ``(entropy, expected_remaining)`` from a float64 counts block.
+
+    Uses ``score_guess``'s exact formulas, vectorized over rows. The float
+    arithmetic is identical to the per-row path, so a row compressed into
+    this block gets bit-identical metrics to scanning it in full.
+    """
+    log_c = np.zeros_like(counts)
+    np.log2(counts, out=log_c, where=counts > 0)
+    entropy = (counts * (np.log2(s_size) - log_c)).sum(axis=1) / s_size
+    expected_remaining = (counts * counts).sum(axis=1) / s_size
+    return entropy, expected_remaining
+
+
 def select_guess(S: np.ndarray, legal: np.ndarray | None, matrix: np.ndarray) -> int:
     """Pick the best guess index for the solution set ``S`` (Task 3 policy).
 
@@ -192,16 +208,42 @@ def select_guess(S: np.ndarray, legal: np.ndarray | None, matrix: np.ndarray) ->
     if S.size == 1 and mask[S[0]]:
         return int(S[0])
 
-    counts = counts_vs_S(matrix, S)[candidates].astype(np.float64)  # (L, 243)
-    s_size = S.size
+    # Two-solution fast path: a member guess always splits 1/1, which wins
+    # the entropy argmax (1.0 beats every non-splitter) and the
+    # expected-remaining argmin (1.0 ties among splitters), then wins the
+    # member stage — so the policy's pick is provably the lowest legal
+    # member, without scanning any candidate rows.
+    if S.size == 2 and (mask[S[0]] or mask[S[1]]):
+        return int(S[0]) if mask[S[0]] else int(S[1])
 
-    # Entropy of each candidate's bucket distribution, vectorized over
-    # score_guess's definition: sum over c > 0 of (c/|S|) * log2(|S|/c).
-    # The zero-masked log2 keeps c == 0 cells contributing 0 (never log2(0)).
-    log_c = np.zeros_like(counts)
-    np.log2(counts, out=log_c, where=counts > 0)
-    entropy = (counts * (np.log2(s_size) - log_c)).sum(axis=1) / s_size
-    expected_remaining = (counts * counts).sum(axis=1) / s_size
+    s_size = S.size
+    sub = matrix[:, S]  # (L, len(S)) uint8 pattern block
+
+    # Small solution sets: identical pattern rows give identical metrics, so
+    # collapse candidates onto their distinct pattern rows first. Rows with
+    # the same key share one histogram — computed once — and the scatter
+    # back is exact (same float64 formula on the same histogram), so the
+    # policy's choice is bit-identical to the full scan.
+    if s_size <= _POW243.size and candidates.size > 3:
+        keys = sub.astype(np.int64) @ _POW243[:s_size]
+        uk, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+        if uk.size * 3 < candidates.size:
+            reps = np.take(sub, first, axis=0).astype(np.int64)
+            flat = reps + np.arange(uk.size)[:, None] * N_PATTERNS
+            counts = np.bincount(
+                flat.ravel(), minlength=uk.size * N_PATTERNS
+            ).reshape(uk.size, N_PATTERNS).astype(np.float64)
+            entropy, expected_remaining = _score_counts_block(counts, s_size)
+            entropy = entropy[inv]
+            expected_remaining = expected_remaining[inv]
+        else:
+            entropy, expected_remaining = None, None  # collapse not worth it
+    else:
+        entropy, expected_remaining = None, None
+
+    if entropy is None:
+        counts = counts_vs_S(matrix, S)[candidates].astype(np.float64)  # (L, 243)
+        entropy, expected_remaining = _score_counts_block(counts, s_size)
 
     # The chain itself: narrow the survivors at each stage. flatnonzero
     # results stay sorted, and `best` indexes into `candidates`, so
@@ -267,6 +309,13 @@ def expected_and_worst_turns(
     # One solution left but unreachable by any legal guess: hard-mode dead end.
     if S.size == 1:
         raise ValueError("hard-mode dead end")
+
+    # Two-solution fast path (exact, not an approximation): the policy plays
+    # the lowest legal member — proven by select_guess's 1/1-split argument —
+    # which solves its own pattern this turn and leaves exactly one solution
+    # for the next, so E = 1 + (1/2)·1 and W = 2 bit-for-bit.
+    if S.size == 2 and (legal is None or np.asarray(legal, dtype=bool)[S].all()):
+        return 1.5, 2
 
     key = (S.astype(np.int32).tobytes(), legal.tobytes() if legal is not None else b"")
     if key in memo:
